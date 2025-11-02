@@ -1,7 +1,7 @@
 version: '3.8'
 
 services:
-  # HOT TIER - Primary MinIO Cluster
+  # HOT TIER - Primary MinIO Cluster (Distributed Mode for ILM)
   minio-hot:
     image: quay.io/minio/minio:latest
     container_name: minio-hot
@@ -11,9 +11,13 @@ services:
     environment:
       MINIO_ROOT_USER: minioadmin
       MINIO_ROOT_PASSWORD: minioadmin
+      MINIO_ILM_SCANNER_RUN_INTERVAL: 1m
     volumes:
-      - minio-hot-data:/data
-    command: server /data --console-address ":9001"
+      - minio-hot-data1:/data1
+      - minio-hot-data2:/data2
+      - minio-hot-data3:/data3
+      - minio-hot-data4:/data4
+    command: server /data1 /data2 /data3 /data4 --console-address ":9001"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
       interval: 30s
@@ -22,7 +26,7 @@ services:
     networks:
       - iceberg-net
 
-  # COLD TIER - Remote Tier MinIO Cluster
+  # COLD TIER - Remote Tier MinIO Cluster (Distributed Mode for ILM)
   minio-cold:
     image: quay.io/minio/minio:latest
     container_name: minio-cold
@@ -33,8 +37,11 @@ services:
       MINIO_ROOT_USER: minioadmin
       MINIO_ROOT_PASSWORD: minioadmin
     volumes:
-      - minio-cold-data:/data
-    command: server /data --console-address ":9001"
+      - minio-cold-data1:/data1
+      - minio-cold-data2:/data2
+      - minio-cold-data3:/data3
+      - minio-cold-data4:/data4
+    command: server /data1 /data2 /data3 /data4 --console-address ":9001"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
       interval: 30s
@@ -101,6 +108,14 @@ networks:
     driver: bridge
 
 volumes:
-  minio-hot-data:
-  minio-cold-data:
+  # MinIO HOT Distributed Volumes
+  minio-hot-data1:
+  minio-hot-data2:
+  minio-hot-data3:
+  minio-hot-data4:
+  # MinIO COLD Distributed Volumes
+  minio-cold-data1:
+  minio-cold-data2:
+  minio-cold-data3:
+  minio-cold-data4:
 

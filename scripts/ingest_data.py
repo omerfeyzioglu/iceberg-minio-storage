@@ -9,51 +9,45 @@ from pyspark.sql import SparkSession
 from pyspark.sql.functions import col, current_date, lit, rand, current_timestamp
 from datetime import datetime, timedelta
 import random
+import argparse
+import os
+import base64
 
 def create_spark_session():
-    """Iceberg + MinIO yapılandırmalı Spark session"""
     return SparkSession.builder \
         .appName("Iceberg Data Ingestion") \
-        .config("spark.jars", "/opt/spark/jars/custom/iceberg-spark-runtime-3.5_2.12-1.5.2.jar,"
-                              "/opt/spark/jars/custom/aws-java-sdk-bundle-1.12.262.jar,"
-                              "/opt/spark/jars/custom/hadoop-aws-3.3.4.jar") \
-        .config("spark.sql.catalog.iceberg", "org.apache.iceberg.spark.SparkCatalog") \
-        .config("spark.sql.catalog.iceberg.type", "hadoop") \
-        .config("spark.sql.catalog.iceberg.warehouse", "s3a://iceberg-warehouse/") \
-        .config("spark.hadoop.fs.s3a.endpoint", "http://minio-hot:9000") \
-        .config("spark.hadoop.fs.s3a.access.key", "minioadmin") \
-        .config("spark.hadoop.fs.s3a.secret.key", "minioadmin") \
-        .config("spark.hadoop.fs.s3a.path.style.access", "true") \
-        .config("spark.hadoop.fs.s3a.connection.ssl.enabled", "false") \
-        .config("spark.hadoop.fs.s3a.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem") \
-        .config("spark.sql.extensions", "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions") \
-        .config("spark.sql.defaultCatalog", "iceberg") \
         .getOrCreate()
 
-def create_sample_data(spark, num_records=10000, date_offset=0):
-    """
-    Örnek veri oluştur
-    
-    Args:
-        spark: SparkSession
-        num_records: Oluşturulacak kayıt sayısı
-        date_offset: Bugünden kaç gün geriye gidilecek (0=bugün, 1=dün, vb.)
-    """
+def create_sample_data(spark, num_records=10000, date_offset=0, payload_bytes=0, random_payload=False):
+
     target_date = datetime.now() - timedelta(days=date_offset)
     
-    # Örnek veri
     data = []
     categories = ['Electronics', 'Clothing', 'Food', 'Books', 'Sports']
     regions = ['North', 'South', 'East', 'West', 'Central']
     
+    payload_unit = "X" * max(0, min(payload_bytes, 1024))  # build in chunks to avoid huge string ops
+    repeats = 0 if payload_bytes <= 0 else max(1, payload_bytes // max(1, len(payload_unit)))
+
     for i in range(num_records):
+        # construct payload lazily to avoid allocating giant single string repeatedly
+        if payload_bytes > 0:
+            if random_payload:
+                # generate random bytes and base64-encode to printable string with similar size
+                raw = os.urandom(payload_bytes)
+                payload = base64.b64encode(raw).decode('ascii')
+            else:
+                payload = payload_unit * repeats
+        else:
+            payload = None
         data.append({
             'transaction_id': f'TXN{target_date.strftime("%Y%m%d")}_{i:06d}',
             'category': random.choice(categories),
             'region': random.choice(regions),
             'amount': round(random.uniform(10, 1000), 2),
             'quantity': random.randint(1, 100),
-            'date': target_date.date()
+            'date': target_date.date(),
+            'payload': payload
         })
     
     return spark.createDataFrame(data)
@@ -67,7 +61,8 @@ def initialize_table_if_not_exists(spark):
             region STRING,
             amount DOUBLE,
             quantity INT,
-            date DATE
+            date DATE,
+            payload STRING
         )
         USING iceberg
         PARTITIONED BY (date)
@@ -80,9 +75,9 @@ def initialize_table_if_not_exists(spark):
             'write.target-file-size-bytes' = '134217728'
         )
     """)
-    print("✅ Tablo kontrol edildi/oluşturuldu: iceberg.db.transactions")
+    print(" Tablo kontrol edildi/oluşturuldu: iceberg.db.transactions")
 
-def ingest_data(spark, date_offset=0, num_records=10000):
+def ingest_data(spark, date_offset=0, num_records=10000, payload_bytes=0, compression="zstd", target_file_size_bytes=134217728, repartition=None, random_payload=False, disable_parquet_dictionary=False):
     """
     Veri ingestion
     
@@ -93,22 +88,35 @@ def ingest_data(spark, date_offset=0, num_records=10000):
     """
     target_date = (datetime.now() - timedelta(days=date_offset)).date()
     
-    print(f"\n📊 Veri ingestion başlatılıyor...")
+    print(f"\n Veri ingestion başlatılıyor...")
     print(f"   Tarih: {target_date}")
     print(f"   Kayıt sayısı: {num_records}")
-    print(f"   Compression: ZSTD Level 3")
+    print(f"   Payload bytes/row: {payload_bytes}")
+    print(f"   Compression: {compression}")
+    print(f"   Random payload: {random_payload}")
+    print(f"   Disable Parquet dictionary: {disable_parquet_dictionary}")
     
     # Veri oluştur
-    df = create_sample_data(spark, num_records, date_offset)
+    df = create_sample_data(spark, num_records, date_offset, payload_bytes, random_payload)
+
+    # Opsiyonel repartition (büyük dosya üretmeye yardım eder)
+    if repartition is not None and repartition > 0:
+        df = df.repartition(repartition)
+
+    # Yazım öncesi tablo yazma özelliklerini ayarla
+    codec = 'uncompressed' if compression in [None, '', 'none', 'uncompressed'] else compression
+    spark.sql(f"""
+        ALTER TABLE iceberg.db.transactions SET TBLPROPERTIES (
+          'write.parquet.compression-codec' = '{codec}',
+          'write.target-file-size-bytes' = '{int(target_file_size_bytes)}',
+          'write.parquet.dictionary.enabled' = '{'false' if disable_parquet_dictionary else 'true'}'
+        )
+    """)
     
     # Tabloya yaz
-    df.writeTo("iceberg.db.transactions") \
-        .option("write-format", "parquet") \
-        .option("compression-codec", "zstd") \
-        .option("compression-level", "3") \
-        .append()
+    df.writeTo("iceberg.db.transactions").append()
     
-    print(f"✅ {num_records} kayıt başarıyla yazıldı!")
+    print(f" {num_records} kayıt başarıyla yazıldı!")
     
     # İstatistikler
     stats = spark.sql(f"""
@@ -122,15 +130,15 @@ def ingest_data(spark, date_offset=0, num_records=10000):
         GROUP BY date
     """)
     
-    print("\n📈 İstatistikler:")
+    print("\n İstatistikler:")
     stats.show()
 
 def show_table_info(spark):
     """Tablo bilgilerini göster"""
-    print("\n📋 Tablo Metadata:")
+    print("\n Tablo Metadata:")
     spark.sql("DESCRIBE EXTENDED iceberg.db.transactions").show(truncate=False)
     
-    print("\n📊 Partition Özeti:")
+    print("\n Partition Özeti:")
     spark.sql("""
         SELECT 
             date,
@@ -141,44 +149,51 @@ def show_table_info(spark):
         ORDER BY date DESC
     """).show()
     
-    print("\n📁 Tablo Dosyaları:")
+    print("\n Tablo Dosyaları:")
     spark.sql("SELECT * FROM iceberg.db.transactions.files").show(truncate=False)
 
 if __name__ == "__main__":
-    print("🚀 Iceberg Data Ingestion Script")
+    parser = argparse.ArgumentParser(description="Iceberg bulk ingestion")
+    parser.add_argument('--clean', action='store_true', help='Tabloyu drop + recreate')
+    parser.add_argument('--num-records', type=int, default=10000, help='Kayıt sayısı')
+    parser.add_argument('--date-offset', type=int, default=0, help='0=bugün, 1=dün, ...')
+    parser.add_argument('--payload-bytes', type=int, default=0, help='Satır başına ek string payload boyutu')
+    parser.add_argument('--compression', type=str, default='zstd', help='zstd|gzip|none')
+    parser.add_argument('--target-file-size-bytes', type=int, default=134217728, help='Hedef dosya boyutu (bytes)')
+    parser.add_argument('--repartition', type=int, default=None, help='Yazmadan önce repartition N')
+    parser.add_argument('--random-payload', action='store_true', help='Her satır için rastgele payload üret')
+    parser.add_argument('--disable-parquet-dictionary', action='store_true', help='Parquet dictionary encoding kapat')
+
+    args = parser.parse_args()
+
+    print(" Iceberg Data Ingestion Script")
     print("=" * 50)
-    
+
     spark = create_spark_session()
-    
+
     try:
-        # Tabloyu oluştur/kontrol et
-        initialize_table_if_not_exists(spark)
-        
-        # Bugünün verisi
-        print("\n" + "=" * 50)
-        print("📅 BUGÜNÜN VERİSİ (T+0)")
-        print("=" * 50)
-        ingest_data(spark, date_offset=0, num_records=10000)
-        
-        # İsteğe bağlı: Geçmiş veriler (test için)
-        # Dünün verisi
-        print("\n" + "=" * 50)
-        print("📅 DÜNÜN VERİSİ (T+1) - Test amaçlı")
-        print("=" * 50)
-        ingest_data(spark, date_offset=1, num_records=8000)
-        
-        # 2 gün öncenin verisi
-        print("\n" + "=" * 50)
-        print("📅 2 GÜN ÖNCENİN VERİSİ (T+2) - Test amaçlı")
-        print("=" * 50)
-        ingest_data(spark, date_offset=2, num_records=6000)
-        
-        # Tablo bilgileri
+        if args.clean:
+            # Drop + recreate
+            spark.sql("DROP TABLE IF EXISTS iceberg.db.transactions")
+            initialize_table_if_not_exists(spark)
+        else:
+            initialize_table_if_not_exists(spark)
+
+        ingest_data(
+            spark,
+            date_offset=args.date_offset,
+            num_records=args.num_records,
+            payload_bytes=args.payload_bytes,
+            compression=args.compression,
+            target_file_size_bytes=args.target_file_size_bytes,
+            repartition=args.repartition,
+            random_payload=args.random_payload,
+            disable_parquet_dictionary=args.disable_parquet_dictionary,
+        )
+
         show_table_info(spark)
-        
-        print("\n✨ Veri ingestion tamamlandı!")
-        print("\n💡 Not: MinIO ILM rule 1 gün sonra eski veriyi COLD tier'a taşıyacak")
-        
+
+        print("\nIngestion tamamlandı")
     finally:
         spark.stop()
 

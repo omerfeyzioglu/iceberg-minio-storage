@@ -1,0 +1,31 @@
+İLM 1 E ÇEK. HOTA BAS KONTROL ET.
+HER ŞEYİ SİL.
+İLM 0 A ÇEK HOT'A BAS COLDA GİDENİ KONTROL ET!
+
+
+COLD'A COMPRESSION EKLEDİM.
+docker exec minio-mc mc admin config set cold compression enable=on 
+
+
+bak bnlar a
+
+# Container'ların durumunu kontrol et
+docker ps
+
+# MinIO client alias'larını kontrol et
+docker exec minio-mc mc alias ls
+
+# Eğer alias'lar yoksa, manuel ekle:
+docker exec minio-mc mc alias set hot http://minio-hot:9000 minioadmin minioadmin
+docker exec minio-mc mc alias set cold http://minio-cold:9000 minioadmin minioadmin
+
+# Bucket'ları kontrol et
+docker exec minio-mc mc ls hot
+docker exec minio-mc mc ls cold
+
+# Eğer bucket yoksa oluştur:
+docker exec minio-mc mc mb hot/iceberg-warehouse
+docker exec minio-mc mc mb cold/iceberg-cold-tier
+
+# Şimdi compression ayarını tekrar dene:
+docker exec minio-mc mc admin config set cold compression enable=on extensions=.txt,.log,.csv,.json,.tar,.xml,.bin,.parquet

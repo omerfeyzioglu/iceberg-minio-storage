@@ -1,0 +1,52 @@
+PREFIX MAPPING!
+docker exec minio-mc mc admin tier add minio hot COLDTIER \
+  --endpoint http://minio-cold:9000 \
+  --access-key minioadmin \
+  --secret-key minioadmin \
+  --bucket iceberg-cold-tier \
+  --prefix "db/transactions/"
+
+docker exec minio-mc mc admin config set cold compression enable=on extensions=".parquet" allow_encryption=off
+
+ilm görüntüleme 
+docker exec minio-mc mc ilm ls hot/iceberg-warehouse
+
+ilm kaldırma 
+docker exec minio-mc mc ilm rm hot/iceberg-warehouse --id d3o1mbi10ghs01cnkg90
+
+ilk ekleme
+docker exec minio-mc mc ilm add hot/iceberg-warehouse --transition-days 1 --storage-class COLDTIER --prefix "db/transactions/data/"
+
+ilm anlık taşıma
+
+docker exec minio-mc mc ilm transition --prefix "db/transactions/data/date=" hot/iceberg-warehouse
+docker exec minio-mc mc ilm transition --prefix "db/transactions/data/date=2025-10-31/" hot/iceberg-warehouse
+
+
+
+jarları kullanarak hot'a veri yazma
+docker exec spark-master /opt/spark/bin/spark-submit --master spark://spark-master:7077 --jars /opt/spark/jars/custom/iceberg-spark-runtime-3.5_2.12-1.5.2.jar,/opt/spark/jars/custom/aws-java-sdk-bundle-1.12.262.jar,/opt/spark/jars/custom/hadoop-aws-3.3.4.jar /scripts/ingest_data.py
+
+cold veri sorgulama 
+docker exec minio-mc mc ls --recursive cold/iceberg-cold-tier/
+içine bakma
+docker exec minio-mc mc ls cold/
+
+
+GÜN BAZLI VERİ SORGULAMA
+docker exec spark-master /opt/spark/bin/spark-sql --master spark://spark-master:7077 --jars /opt/spark/jars/custom/iceberg-spark-runtime-3.5_2.12-1.5.2.jar,/opt/spark/jars/custom/aws-java-sdk-bundle-1.12.262.jar,/opt/spark/jars/custom/hadoop-aws-3.3.4.jar --conf spark.sql.catalog.iceberg=org.apache.iceberg.spark.SparkCatalog --conf spark.sql.catalog.iceberg.type=hadoop --conf spark.sql.catalog.iceberg.warehouse=s3a://iceberg-warehouse/ --conf spark.hadoop.fs.s3a.endpoint=http://minio-hot:9000 --conf spark.hadoop.fs.s3a.access.key=minioadmin --conf spark.hadoop.fs.s3a.secret.key=minioadmin --conf spark.hadoop.fs.s3a.path.style.access=true --conf spark.hadoop.fs.s3a.connection.ssl.enabled=false --conf spark.hadoop.fs.s3a.impl=org.apache.hadoop.fs.s3a.S3AFileSystem --conf spark.sql.extensions=org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions -e "SELECT COUNT(*) FROM iceberg.db.transactions WHERE date = DATE'2025-10-15'"
+
+
+veri basma 
+docker exec spark-master /opt/spark/bin/spark-submit --master spark://spark-master:7077 --jars /opt/spark/jars/custom/iceberg-spark-runtime-3.5_2.12-1.5.2.jar,/opt/spark/jars/custom/aws-java-sdk-bundle-1.12.262.jar,/opt/spark/jars/custom/hadoop-aws-3.3.4.jar /scripts/ingest_data.py
+
+veri temizleme 
+docker exec minio-mc mc rm --recursive --force cold/iceberg-cold-tier/db/
+
+
+
+docker exec spark-master /opt/spark/bin/spark-sql --master spark://spark-master:7077 -e "DROP TABLE IF EXISTS iceberg.db.transactions PURGE"
+
+
+remote tier view 
+docker exec minio-mc mc admin tier ls hot

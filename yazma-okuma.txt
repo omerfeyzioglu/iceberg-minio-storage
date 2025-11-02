@@ -1,0 +1,14 @@
+docker exec spark-master cat /opt/spark/conf/spark-defaults.conf
+
+yazma
+
+docker exec spark-master /opt/spark/bin/spark-submit --master spark://spark-master:7077 /scripts/ingest_data.py
+
+sorgu
+
+docker exec spark-master /opt/spark/bin/spark-submit --master spark://spark-master:7077 /scripts/query_analysis.py
+
+
+docker exec spark-master /opt/spark/bin/spark-sql --master spark://spark-master:7077 -e "SELECT COUNT(*) as total_records FROM iceberg.db.transactions"
+
+

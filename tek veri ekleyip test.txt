@@ -1,0 +1,22 @@
+tek veri ekleyip test 
+
+docker exec spark-master /opt/spark/bin/spark-submit --master spark://spark-master:7077 /opt/spark/work-dir/scripts/ingest_data.py --num-records 30000 --date-offset 0 --payload-bytes 4096 --compression none --disable-parquet-dictionary --repartition 8 --target-file-size-bytes 134217728 --random-payload
+
+data offset ile kaç gün geriye gideceğine karar ver
+
+tek veri 
+
+docker exec spark-master /opt/spark/bin/spark-sql --master spark://spark-master:7077 -e "
+INSERT INTO iceberg.db.transactions VALUES
+('MANUAL_20251030_000001','Electronics','West',123.45,1,DATE '2025-10-31',NULL);
+"
+
+
+docker start minio-cold
+TOPLU SORGULAMA
+# Tekrar tüm partition sorgusu
+docker exec spark-master /opt/spark/bin/spark-sql --master spark://spark-master:7077 -e "
+SELECT count(*) AS cnt, sum(amount) AS total_amount
+FROM iceberg.db.transactions
+WHERE date = DATE '2025-10-31';
+"
